@@ -29,6 +29,7 @@ class Scene:
         self.model_path = args.model_path
         self.loaded_iter = None
         self.gaussians = gaussians
+        self.lookup_pc = None
 
         if load_iteration:
             if load_iteration == -1:
@@ -45,6 +46,10 @@ class Scene:
         elif os.path.exists(os.path.join(args.source_path, "transforms_train.json")):
             print("Found transforms_train.json file, assuming Blender data set!")
             scene_info = sceneLoadTypeCallbacks["Blender"](args.source_path, args.white_background, args.eval)
+        elif os.path.exists(os.path.join(args.source_path, "raw.data")):
+            print("Found raw.data, assuming Dust3r cams and pc")
+            scene_info = sceneLoadTypeCallbacks["Dust3r"](args.source_path, args.images, args.eval)
+            # self.lookup_pc = scene_info.lookup_pc
         else:
             assert False, "Could not recognize scene type!"
 
@@ -80,7 +85,7 @@ class Scene:
                                                            "iteration_" + str(self.loaded_iter),
                                                            "point_cloud.ply"))
         else:
-            self.gaussians.create_from_pcd(scene_info.point_cloud, self.cameras_extent)
+            self.gaussians.create_from_pcd(scene_info.point_cloud, self.cameras_extent, scene_info.nearest_points)
 
     def save(self, iteration):
         point_cloud_path = os.path.join(self.model_path, "point_cloud/iteration_{}".format(iteration))

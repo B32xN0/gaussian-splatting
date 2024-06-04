@@ -76,7 +76,10 @@ class OptimizationParams(ParamGroup):
         self.position_lr_delay_mult = 0.01
         self.position_lr_max_steps = 30_000
         self.feature_lr = 0.0025
+        # ORIGINAL:
         self.opacity_lr = 0.05
+        # MINE:
+        # self.opacity_lr = 0.2
         self.scaling_lr = 0.005
         self.rotation_lr = 0.001
         self.percent_dense = 0.01
@@ -85,7 +88,10 @@ class OptimizationParams(ParamGroup):
         self.opacity_reset_interval = 3000
         self.densify_from_iter = 500
         self.densify_until_iter = 15_000
-        self.densify_grad_threshold = 0.0002
+        # MINE:
+        # self.densify_grad_threshold = 0.0002
+        # ORIGINAL:
+        self.densify_grad_threshold = 0.00002
         super().__init__(parser, "Optimization Parameters")
 
 def get_combined_args(parser : ArgumentParser):

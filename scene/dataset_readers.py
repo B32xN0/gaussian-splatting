@@ -10,11 +10,15 @@
 #
 
 import os
+import pickle
 import sys
+
+import torch
 from PIL import Image
 from typing import NamedTuple
 from scene.colmap_loader import read_extrinsics_text, read_intrinsics_text, qvec2rotmat, \
     read_extrinsics_binary, read_intrinsics_binary, read_points3D_binary, read_points3D_text
+from scene.duster_loader import extract_duster_caminfos
 from utils.graphics_utils import getWorld2View2, focal2fov, fov2focal
 import numpy as np
 import json
@@ -22,6 +26,7 @@ from pathlib import Path
 from plyfile import PlyData, PlyElement
 from utils.sh_utils import SH2RGB
 from scene.gaussian_model import BasicPointCloud
+from scipy.spatial import KDTree
 
 class CameraInfo(NamedTuple):
     uid: int
@@ -41,6 +46,8 @@ class SceneInfo(NamedTuple):
     test_cameras: list
     nerf_normalization: dict
     ply_path: str
+    lookup_pc: KDTree = None
+    nearest_points: torch.Tensor = None
 
 def getNerfppNorm(cam_info):
     def get_center_and_diag(cam_centers):
@@ -254,7 +261,83 @@ def readNerfSyntheticInfo(path, white_background, eval, extension=".png"):
                            ply_path=ply_path)
     return scene_info
 
+
+def readDust3rInfo(path, images, eval, llffhold=8):
+    # try:
+    #     cameras_extrinsic_file = os.path.join(path, "sparse/0", "images.bin")
+    #     cameras_intrinsic_file = os.path.join(path, "sparse/0", "cameras.bin")
+    #     cam_extrinsics = read_extrinsics_binary(cameras_extrinsic_file)
+    #     cam_intrinsics = read_intrinsics_binary(cameras_intrinsic_file)
+    # except:
+    #     cameras_extrinsic_file = os.path.join(path, "sparse/0", "images.txt")
+    #     cameras_intrinsic_file = os.path.join(path, "sparse/0", "cameras.txt")
+    #     cam_extrinsics = read_extrinsics_text(cameras_extrinsic_file)
+    #     cam_intrinsics = read_intrinsics_text(cameras_intrinsic_file)
+
+    data = pickle.load(open(os.path.join(path, "raw.data"), "rb"))
+
+
+    reading_dir = "images" if images == None else images
+    # TODO read cameras analog to readColmapCameras
+    # TODO make format caminfos and sort same as others
+
+    cam_infos = extract_duster_caminfos(data["cams2world"], data["imgs"], data["focals"], os.path.join(path, "images"))
+
+    # cam_infos_unsorted = readColmapCameras(cam_extrinsics=cam_extrinsics, cam_intrinsics=cam_intrinsics, images_folder=os.path.join(path, reading_dir))
+    # cam_infos = sorted(cam_infos_unsorted.copy(), key = lambda x : x.image_name)
+
+    if eval:
+        train_cam_infos = [c for idx, c in enumerate(cam_infos) if idx % llffhold != 0]
+        test_cam_infos = [c for idx, c in enumerate(cam_infos) if idx % llffhold == 0]
+    else:
+        train_cam_infos = cam_infos
+        test_cam_infos = []
+
+    # TODO double check if we are in right format already
+    # nerf_normalization = getNerfppNorm(train_cam_infos)
+    nerf_normalization = {"translate": 0., "radius": 1.}
+
+    # TODO maybe need to do axis swap from blender method cam from poses
+
+    # ply_path = os.path.join(path, "sparse/0/points3D.ply")
+    # bin_path = os.path.join(path, "sparse/0/points3D.bin")
+    # txt_path = os.path.join(path, "sparse/0/points3D.txt")
+    # if not os.path.exists(ply_path):
+    #     print("Converting point3d.bin to .ply, will happen only the first time you open the scene.")
+    #     try:
+    #         xyz, rgb, _ = read_points3D_binary(bin_path)
+    #     except:
+    #         xyz, rgb, _ = read_points3D_text(txt_path)
+    #     storePly(ply_path, xyz, rgb)
+    # try:
+    #     pcd = fetchPly(ply_path)
+    # except:
+    #     pcd = None
+    # TODO just extract pcd from data
+    pcd = BasicPointCloud(points=data["pts"], colors=data["col"], normals=None)
+    ply_path = os.path.join(path, "pcd.ply")
+    # if not os.path.exists(ply_path):
+    storePly(ply_path, data["pts"], (data["col"] * 255).astype(np.uint8))
+    pcd = fetchPly(ply_path)
+
+    lookup_table = KDTree(data["pts"])
+    nearest_distances, nearest_indices = lookup_table.query(data["pts"], k=4, workers=-1)
+    nearest_points = data["pts"][nearest_indices]
+    nearest_points = torch.from_numpy(nearest_points).cuda()
+    nearest_points.requires_grad = False
+
+    scene_info = SceneInfo(point_cloud=pcd,
+                           train_cameras=train_cam_infos,
+                           test_cameras=test_cam_infos,
+                           nerf_normalization=nerf_normalization,
+                           ply_path=ply_path,
+                           lookup_pc=lookup_table,
+                           nearest_points=nearest_points)
+    return scene_info
+
+
 sceneLoadTypeCallbacks = {
     "Colmap": readColmapSceneInfo,
-    "Blender" : readNerfSyntheticInfo
+    "Blender" : readNerfSyntheticInfo,
+    "Dust3r" : readDust3rInfo,
 }

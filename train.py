@@ -8,11 +8,13 @@
 #
 # For inquiries contact  george.drettakis@inria.fr
 #
-
+import math
 import os
+
+import geomloss
 import torch
 from random import randint
-from utils.loss_utils import l1_loss, ssim
+from utils.loss_utils import l1_loss, ssim, l2_loss
 from gaussian_renderer import render, network_gui
 import sys
 from scene import Scene, GaussianModel
@@ -22,6 +24,7 @@ from tqdm import tqdm
 from utils.image_utils import psnr
 from argparse import ArgumentParser, Namespace
 from arguments import ModelParams, PipelineParams, OptimizationParams
+
 try:
     from torch.utils.tensorboard import SummaryWriter
     TENSORBOARD_FOUND = True
@@ -31,8 +34,13 @@ except ImportError:
 def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from):
     first_iter = 0
     tb_writer = prepare_output_and_logger(dataset)
+    # dataset.sh_degree = 3  # Change back
     gaussians = GaussianModel(dataset.sh_degree)
+
     scene = Scene(dataset, gaussians)
+    # duster_pc = torch.from_numpy(scene.lookup_pc.data).to(torch.float32).cuda()
+    # duster_pc.requires_grad_(False)
+    # wasserstein_dist = geomloss.SamplesLoss()
     gaussians.training_setup(opt)
     if checkpoint:
         (model_params, first_iter) = torch.load(checkpoint)
@@ -46,6 +54,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
     viewpoint_stack = None
     ema_loss_for_log = 0.0
+    geom_loss_for_log = 0.0
     progress_bar = tqdm(range(first_iter, opt.iterations), desc="Training progress")
     first_iter += 1
     for iteration in range(first_iter, opt.iterations + 1):        
@@ -87,15 +96,35 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         gt_image = viewpoint_cam.original_image.cuda()
         Ll1 = l1_loss(image, gt_image)
         loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image))
-        loss.backward()
+        geometric_loss = 0.
+        # if scene.lookup_pc is not None:
+        #     gaussians_cpu = gaussians.get_xyz.cpu()
+        #     rand_idcs1 = torch.randperm(len(gaussians.get_xyz))[:50_000]
+        #     rand_idcs2 = torch.randperm(len(duster_pc))[:50_000]
+        #     _, indices = scene.lookup_pc.query(gaussians_cpu[rand_idcs].detach().numpy())
+        #     nearest_points = gaussians_copy + distances
+        #
+        #     geometric_loss = l2_loss(gaussians_cpu[rand_idcs], torch.from_numpy(scene.lookup_pc.data[indices]))
+        #     loss += geometric_loss.cuda()
+        #     geometric_loss = (1_000_000 / len(gaussians.get_xyz)) * wasserstein_dist.forward(gaussians.get_xyz[rand_idcs1], duster_pc[rand_idcs2])
+        #     geometric_loss = sinkhorn(gaussians.get_xyz, duster_pc)
+        #     loss += geometric_loss
+
+        total_loss = loss + geometric_loss
+        total_loss.backward()
 
         iter_end.record()
 
         with torch.no_grad():
             # Progress bar
             ema_loss_for_log = 0.4 * loss.item() + 0.6 * ema_loss_for_log
+            if geometric_loss != 0:
+                geom_loss_for_log = 0.4 * geometric_loss.item() + 0.6 * geom_loss_for_log
             if iteration % 10 == 0:
-                progress_bar.set_postfix({"Loss": f"{ema_loss_for_log:.{7}f}"})
+                progress_bar.set_postfix({"Loss": f"{ema_loss_for_log:.{7}f}",
+                                          "Geom Loss": f"{geom_loss_for_log:.{7}f}",
+                                          "N Gaussians": f"{len(gaussians.get_xyz)}"
+                                          })
                 progress_bar.update(10)
             if iteration == opt.iterations:
                 progress_bar.close()
@@ -107,22 +136,26 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 scene.save(iteration)
 
             # Densification
-            if iteration < opt.densify_until_iter:
-                # Keep track of max radii in image-space for pruning
-                gaussians.max_radii2D[visibility_filter] = torch.max(gaussians.max_radii2D[visibility_filter], radii[visibility_filter])
-                gaussians.add_densification_stats(viewspace_point_tensor, visibility_filter)
-
-                if iteration > opt.densify_from_iter and iteration % opt.densification_interval == 0:
-                    size_threshold = 20 if iteration > opt.opacity_reset_interval else None
-                    gaussians.densify_and_prune(opt.densify_grad_threshold, 0.005, scene.cameras_extent, size_threshold)
-                
-                if iteration % opt.opacity_reset_interval == 0 or (dataset.white_background and iteration == opt.densify_from_iter):
-                    gaussians.reset_opacity()
-
+            # if iteration < opt.densify_until_iter:
+            #     # Keep track of max radii in image-space for pruning
+            #     gaussians.max_radii2D[visibility_filter] = torch.max(gaussians.max_radii2D[visibility_filter], radii[visibility_filter])
+            #     gaussians.add_densification_stats(viewspace_point_tensor, visibility_filter)
+            #
+            #     if iteration > opt.densify_from_iter and iteration % opt.densification_interval == 0:
+            #         size_threshold = 20 if iteration > opt.opacity_reset_interval else None
+            #         # gaussians.densify_and_prune(opt.densify_grad_threshold, 0.005, scene.cameras_extent, size_threshold)
+            #         gaussians.densify_and_prune_pc(opt.densify_grad_threshold, 0.005, scene.cameras_extent, size_threshold)
+            #
+            #     # if iteration % opt.opacity_reset_interval == 0 or (dataset.white_background and iteration == opt.densify_from_iter):
+            #     #     gaussians.reset_opacity()
+            #
             # Optimizer step
             if iteration < opt.iterations:
+                gaussians.optimizer_xyz.step()
                 gaussians.optimizer.step()
                 gaussians.optimizer.zero_grad(set_to_none = True)
+                gaussians.optimizer_xyz.zero_grad(set_to_none = True)
+
 
             if (iteration in checkpoint_iterations):
                 print("\n[ITER {}] Saving Checkpoint".format(iteration))

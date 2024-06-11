@@ -11,7 +11,7 @@
 import math
 import os
 
-import geomloss
+# import geomloss
 import torch
 from random import randint
 from utils.loss_utils import l1_loss, ssim, l2_loss
@@ -23,7 +23,7 @@ import uuid
 from tqdm import tqdm
 from utils.image_utils import psnr
 from argparse import ArgumentParser, Namespace
-from arguments import ModelParams, PipelineParams, OptimizationParams
+from arguments import ModelParams, PipelineParams, OptimizationParams, SparseGParams
 
 try:
     from torch.utils.tensorboard import SummaryWriter
@@ -31,20 +31,20 @@ try:
 except ImportError:
     TENSORBOARD_FOUND = False
 
-def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from):
+def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from, sg_options=None):
     first_iter = 0
     tb_writer = prepare_output_and_logger(dataset)
     # dataset.sh_degree = 3  # Change back
     gaussians = GaussianModel(dataset.sh_degree)
 
-    scene = Scene(dataset, gaussians)
+    scene = Scene(dataset, gaussians, sparseG_args=sg_options)
     # duster_pc = torch.from_numpy(scene.lookup_pc.data).to(torch.float32).cuda()
     # duster_pc.requires_grad_(False)
     # wasserstein_dist = geomloss.SamplesLoss()
-    gaussians.training_setup(opt)
+    gaussians.training_setup(opt, sparseG_args=sg_options)
     if checkpoint:
         (model_params, first_iter) = torch.load(checkpoint)
-        gaussians.restore(model_params, opt)
+        gaussians.restore(model_params, opt, sparseG_args=sg_options)
 
     bg_color = [1, 1, 1] if dataset.white_background else [0, 0, 0]
     background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
@@ -136,19 +136,27 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 scene.save(iteration)
 
             # Densification
-            # if iteration < opt.densify_until_iter:
-            #     # Keep track of max radii in image-space for pruning
-            #     gaussians.max_radii2D[visibility_filter] = torch.max(gaussians.max_radii2D[visibility_filter], radii[visibility_filter])
-            #     gaussians.add_densification_stats(viewspace_point_tensor, visibility_filter)
-            #
-            #     if iteration > opt.densify_from_iter and iteration % opt.densification_interval == 0:
-            #         size_threshold = 20 if iteration > opt.opacity_reset_interval else None
-            #         # gaussians.densify_and_prune(opt.densify_grad_threshold, 0.005, scene.cameras_extent, size_threshold)
-            #         gaussians.densify_and_prune_pc(opt.densify_grad_threshold, 0.005, scene.cameras_extent, size_threshold)
-            #
-            #     # if iteration % opt.opacity_reset_interval == 0 or (dataset.white_background and iteration == opt.densify_from_iter):
-            #     #     gaussians.reset_opacity()
-            #
+            if iteration < opt.densify_until_iter:
+                # Keep track of max radii in image-space for pruning
+                gaussians.max_radii2D[visibility_filter] = torch.max(gaussians.max_radii2D[visibility_filter], radii[visibility_filter])
+                gaussians.add_densification_stats(viewspace_point_tensor, visibility_filter)
+
+                if sg_options.densification_method == "normal":
+                    if iteration > opt.densify_from_iter and iteration % opt.densification_interval == 0:
+                        size_threshold = 20 if iteration > opt.opacity_reset_interval else None
+                        gaussians.densify_and_prune(opt.densify_grad_threshold, 0.005, scene.cameras_extent, size_threshold)
+
+                    if iteration % opt.opacity_reset_interval == 0 or (dataset.white_background and iteration == opt.densify_from_iter):
+                        gaussians.reset_opacity()
+
+                elif sg_options.densification_method == "pc":
+                    if iteration > opt.densify_from_iter and iteration % opt.densification_interval == 0:
+                        size_threshold = 20 if iteration > opt.opacity_reset_interval else None
+                        gaussians.densify_and_prune_pc(opt.densify_grad_threshold, 0.005, scene.cameras_extent, size_threshold)
+                    # TODO maybe also do opacity reset here as above
+                elif sg_options.densification_method != "none":
+                    raise ValueError("Unknown densification method")
+
             # Optimizer step
             if iteration < opt.iterations:
                 gaussians.optimizer_xyz.step()
@@ -226,6 +234,7 @@ if __name__ == "__main__":
     lp = ModelParams(parser)
     op = OptimizationParams(parser)
     pp = PipelineParams(parser)
+    sg = SparseGParams(parser)
     parser.add_argument('--ip', type=str, default="127.0.0.1")
     parser.add_argument('--port', type=int, default=6009)
     parser.add_argument('--debug_from', type=int, default=-1)
@@ -246,7 +255,7 @@ if __name__ == "__main__":
     # Start GUI server, configure and run training
     network_gui.init(args.ip, args.port)
     torch.autograd.set_detect_anomaly(args.detect_anomaly)
-    training(lp.extract(args), op.extract(args), pp.extract(args), args.test_iterations, args.save_iterations, args.checkpoint_iterations, args.start_checkpoint, args.debug_from)
+    training(lp.extract(args), op.extract(args), pp.extract(args), args.test_iterations, args.save_iterations, args.checkpoint_iterations, args.start_checkpoint, args.debug_from, sg.extract(args))
 
     # All done
     print("\nTraining complete.")

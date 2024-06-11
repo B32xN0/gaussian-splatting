@@ -89,10 +89,22 @@ class OptimizationParams(ParamGroup):
         self.densify_from_iter = 500
         self.densify_until_iter = 15_000
         # MINE:
-        # self.densify_grad_threshold = 0.0002
+        # self.densify_grad_threshold = 0.00002
         # ORIGINAL:
-        self.densify_grad_threshold = 0.00002
+        self.densify_grad_threshold = 0.0002
         super().__init__(parser, "Optimization Parameters")
+
+class SparseGParams(ParamGroup):
+    def __init__(self, parser):
+        self.restriction_neighborhood = 0  # 4
+        self.xyz_opti_method = "normal"  # normal = adam, other: sgd, none
+        self.densification_method = "normal"  # supported normal, pc, none (or anyth
+
+        # self.restriction_neighborhood = 4  # 4
+        # self.xyz_opti_method = "sgd"  # normal = adam, other: sgd, none
+        # self.densification_method = "none"  # supported normal, pc, none (or anyth
+
+        super().__init__(parser, "SparseG Parameters")
 
 def get_combined_args(parser : ArgumentParser):
     cmdlne_string = sys.argv[1:]

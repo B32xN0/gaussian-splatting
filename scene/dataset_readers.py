@@ -262,7 +262,7 @@ def readNerfSyntheticInfo(path, white_background, eval, extension=".png"):
     return scene_info
 
 
-def readDust3rInfo(path, images, eval, llffhold=8):
+def readDust3rInfo(path, images, eval, llffhold=8, k=0):
     # try:
     #     cameras_extrinsic_file = os.path.join(path, "sparse/0", "images.bin")
     #     cameras_intrinsic_file = os.path.join(path, "sparse/0", "cameras.bin")
@@ -320,11 +320,15 @@ def readDust3rInfo(path, images, eval, llffhold=8):
     storePly(ply_path, data["pts"], (data["col"] * 255).astype(np.uint8))
     pcd = fetchPly(ply_path)
 
-    lookup_table = KDTree(data["pts"])
-    nearest_distances, nearest_indices = lookup_table.query(data["pts"], k=4, workers=-1)
-    nearest_points = data["pts"][nearest_indices]
-    nearest_points = torch.from_numpy(nearest_points).cuda()
-    nearest_points.requires_grad = False
+    if k > 0:
+        lookup_table = KDTree(data["pts"])
+        nearest_distances, nearest_indices = lookup_table.query(data["pts"], k=k, workers=-1)
+        nearest_points = data["pts"][nearest_indices]
+        nearest_points = torch.from_numpy(nearest_points).cuda()
+        nearest_points.requires_grad = False
+    else:
+        lookup_table = None
+        nearest_points = None
 
     scene_info = SceneInfo(point_cloud=pcd,
                            train_cameras=train_cam_infos,

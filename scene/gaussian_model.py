@@ -73,11 +73,11 @@ class GaussianModel:
             self.xyz_gradient_accum,
             self.denom,
             self.optimizer.state_dict(),
-            self.optimizer_xyz.state_dict(),
+            self.optimizer_xyz.state_dict() if self.optimizer_xyz is not None else None,
             self.spatial_lr_scale,
         )
     
-    def restore(self, model_args, training_args):
+    def restore(self, model_args, training_args, sparseG_args=None):
         (self.active_sh_degree, 
         self._xyz, 
         self._features_dc, 
@@ -91,11 +91,13 @@ class GaussianModel:
         opt_dict,
         opt_xyz_dict,
         self.spatial_lr_scale) = model_args
-        self.training_setup(training_args)
+
+        self.training_setup(training_args, sparseG_args)
         self.xyz_gradient_accum = xyz_gradient_accum
         self.denom = denom
         self.optimizer.load_state_dict(opt_dict)
-        self.optimizer_xyz.load_state_dict(opt_xyz_dict)
+        if opt_xyz_dict is not None and self.optimizer_xyz is not None:
+            self.optimizer_xyz.load_state_dict(opt_xyz_dict)
 
     @property
     def get_scaling(self):
@@ -152,7 +154,7 @@ class GaussianModel:
         self.max_radii2D = torch.zeros((self.get_xyz.shape[0]), device="cuda")
         self.nearest_points = nearest_points
 
-    def training_setup(self, training_args):
+    def training_setup(self, training_args, sparseG_args=None):
         self.percent_dense = training_args.percent_dense
         self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
         self.denom = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
@@ -169,10 +171,16 @@ class GaussianModel:
             {'params': [self._scaling], 'lr': training_args.scaling_lr, "name": "scaling"}
         ]
 
-        # self.optimizer = torch.optim.Adam(l, lr=0.0, eps=1e-15)
-        self.optimizer = torch.optim.SGD(l, lr=0.0)
-        self.optimizer_xyz = torch.optim.SGD(l2, lr=0.0)
-        # self.optimizer = torch.optim.SGD(l, lr=0.0)
+        if sparseG_args.xyz_opti_method == "normal":
+            self.optimizer = torch.optim.Adam(l, lr=0.0, eps=1e-15)
+            self.optimizer_xyz = torch.optim.Adam(l2, lr=0.0, eps=1e-15)
+        elif sparseG_args.xyz_opti_method == "sgd":
+            # self.optimizer = torch.optim.Adam(l, lr=0.0, eps=1e-15)
+            self.optimizer = torch.optim.SGD(l, lr=0.0)
+            self.optimizer_xyz = torch.optim.SGD(l2, lr=0.0)
+        else:
+            raise ValueError("Invalid xyz_opti_method")
+
         self.xyz_scheduler_args = get_expon_lr_func(lr_init=training_args.position_lr_init*self.spatial_lr_scale,
                                                     lr_final=training_args.position_lr_final*self.spatial_lr_scale,
                                                     lr_delay_mult=training_args.position_lr_delay_mult,
@@ -349,7 +357,8 @@ class GaussianModel:
 
         self.denom = self.denom[valid_points_mask]
         self.max_radii2D = self.max_radii2D[valid_points_mask]
-        self.nearest_points = self.nearest_points[valid_points_mask]
+        if self.nearest_points is not None:
+            self.nearest_points = self.nearest_points[valid_points_mask]
 
     def cat_tensors_to_optimizer(self, tensors_dict):
         optimizable_tensors = {}
@@ -433,7 +442,8 @@ class GaussianModel:
         new_features_rest = self._features_rest[selected_pts_mask].repeat(N,1,1)
         new_opacity = self._opacity[selected_pts_mask].repeat(N,1)
 
-        self.nearest_points = torch.cat([self.nearest_points, self.nearest_points[selected_pts_mask], self.nearest_points[selected_pts_mask]])
+        if self.nearest_points is not None:
+            self.nearest_points = torch.cat([self.nearest_points, self.nearest_points[selected_pts_mask], self.nearest_points[selected_pts_mask]])
 
         self.densification_postfix(new_xyz, new_features_dc, new_features_rest, new_opacity, new_scaling, new_rotation)
 
@@ -453,7 +463,8 @@ class GaussianModel:
         new_scaling = self._scaling[selected_pts_mask]
         new_rotation = self._rotation[selected_pts_mask]
 
-        self.nearest_points = torch.cat([self.nearest_points, self.nearest_points[selected_pts_mask]])
+        if self.nearest_points is not None:
+            self.nearest_points = torch.cat([self.nearest_points, self.nearest_points[selected_pts_mask]])
 
         self.densification_postfix(new_xyz, new_features_dc, new_features_rest, new_opacities, new_scaling, new_rotation)
 
@@ -491,7 +502,8 @@ class GaussianModel:
         new_scaling[:,:] = torch.mean(self._scaling)
         new_rotation = self._rotation[selected_pts_mask].repeat(N, 1)
 
-        self.nearest_points = torch.cat([self.nearest_points, self.nearest_points[selected_pts_mask], self.nearest_points[selected_pts_mask]])
+        if self.nearest_points is not None:
+            self.nearest_points = torch.cat([self.nearest_points, self.nearest_points[selected_pts_mask], self.nearest_points[selected_pts_mask]])
         self.densification_postfix(new_xyz, new_features_dc, new_features_rest, new_opacities, new_scaling, new_rotation)
 
         prune_filter = torch.cat((selected_pts_mask, torch.zeros(N * selected_pts_mask.sum(), device="cuda", dtype=bool)))
@@ -511,7 +523,8 @@ class GaussianModel:
         new_scaling = self._scaling[selected_pts_mask]
         new_rotation = self._rotation[selected_pts_mask]
 
-        self.nearest_points = torch.cat([self.nearest_points, self.nearest_points[selected_pts_mask]])
+        if self.nearest_points is not None:
+            self.nearest_points = torch.cat([self.nearest_points, self.nearest_points[selected_pts_mask]])
 
         self.densification_postfix(new_xyz, new_features_dc, new_features_rest, new_opacities, new_scaling,
                                    new_rotation)
@@ -528,7 +541,8 @@ class GaussianModel:
         new_scaling = self._scaling[selected_pts_mask] * 0.5
         new_rotation = self._rotation[selected_pts_mask]
 
-        self.nearest_points = torch.cat([self.nearest_points, self.nearest_points[selected_pts_mask]])
+        if self.nearest_points is not None:
+            self.nearest_points = torch.cat([self.nearest_points, self.nearest_points[selected_pts_mask]])
 
         self.densification_postfix(new_xyz, new_features_dc, new_features_rest, new_opacities, new_scaling,
                                    new_rotation)

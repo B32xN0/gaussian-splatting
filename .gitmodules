@@ -7,3 +7,6 @@
 [submodule "SIBR_viewers"]
 	path = SIBR_viewers
 	url = https://gitlab.tudelft.nl/B.Buschmann/sibr_core.git
+[submodule "Dust3r"]
+	path = Dust3r
+	url = https://github.com/B32xN0/dust3r.git

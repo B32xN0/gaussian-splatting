@@ -1,10 +1,15 @@
 name: SparseGaussians
+channel_priority: strict
 channels:
-  - pytorch
-  - conda-forge
-  - defaults
+  - nvidia/label/cuda-12.1.1
   - nvidia
+  - pytorch
+  - defaults
+  - conda-forge
 dependencies:
+  - cuda-toolkit
+  - gxx_linux-64
+  - glm
   - pytorch
   - torchvision
   - torchaudio
@@ -17,3 +22,13 @@ dependencies:
   - pip:
     - -e submodules/diff-gaussian-rasterization
     - -e submodules/simple-knn
+    # Deps from Dust3r:
+    - roma
+    - gradio
+    - matplotlib
+    - opencv-python
+    - einops
+    - trimesh
+    - tensorboard
+    - pyglet<2
+    - huggingface-hub[torch]>=0.22
